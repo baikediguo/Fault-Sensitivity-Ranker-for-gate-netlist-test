@@ -209,6 +209,7 @@ pip install -r requirements.txt
 > 典型高敏感节点特征：位于关键路径、高扇出、近时序边界、重收敛区域、与输出节点嵌入相似度高。
 
 ## 系统架构图
+```mermaid
 graph TD
     A[Verilog网表文件] --> B[解析器]
     B --> C[构建有向图]
@@ -224,7 +225,7 @@ graph TD
     G --> K
     K --> L[敏感度评分]
     L --> M[排序输出]
-
+```
     1. 流程示意图：
     graph LR
     A[Verilog文件] --> B[AST解析]
