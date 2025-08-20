@@ -38,3 +38,35 @@ Uses AI (particularly graph neural networks) to predict or rank the likelihood o
 7. Save hardware/simulation resource costs
 
 * In environments with limited computing power or licenses (such as CI, cloud simulation, shared farms), the Top-K strategy can convert the same budget into higher coverage benefits.
+
+## Fault injection using Pyverilog in a single PE
+
+[Pyverilog](https://github.com/PyHDI/Pyverilog) can parse the Verilog netlists into Abstract Syntax Trees (ASTs) and generate verilog code from ASTs. ASTs can be modified to inject faults.
+
+Golden Simulation:
+* Compile and run the gate-level model 
+* Outputs golden simulation results in `sim_logs/sim_logs_manual`
+
+Fault Injection:
+* Model: single stuck-at fault
+* `gatesa_fault_injection.py` traverses all gates (such as AND/OR/XOR...) and performs 'fault injection' on each gate—such as forcing the output to 0 (stuck-at-0) or 1 (stuck-at-1). Injects faults into all gate output ports, regardless of whether they are wires or registers, by inserting an assign statement to achieve 'generalized node-level' injection, ensuring no output nodes are skipped. This indirectly covers all Q-end registers and wire nodes.
+* For each fault version, generate a modified Verilog file, call Icarus Verilog (iverilog) to run functional simulation, and extract the output.
+
+Evaluation:
+* `unsup_sensitivity.py` Predicting or ranking the likelihood of faults at each node in a Verilog circuit netlist without explicit fault injection.
+* `manual_validation.py` Verify through fault injection simulation whether the sensitive nodes predicted by GNN are truly effective.
+
+##  Environment Setup Notes
+For a quick setup, you can use the following command to install all dependencies at once:
+
+pip install -r requirements.txt
+
+Alternatively, if you prefer to install the dependencies step-by-step, please follow the instructions below:
+* [Pyverilog](https://github.com/PyHDI/Pyverilog): `pip install pyverilog`
+* [iVerilog](https://steveicarus.github.io/iverilog/)
+* On Windows: Use [mingw-w64](https://www.mingw-w64.org) or [WSL](https://learn.microsoft.com/en-us/windows/wsl/install)
+* Technology libraries need to be downloaded separately (Optional):
+  * Synopsys Educational Design Kit (SAED90nm)
+  * [Nangate Open Cell Library](https://github.com/JulianKemmerer/Drexel-ECEC575/tree/master/Encounter/NangateOpenCellLibrary)
+ 
+ ## Below is a detailed guide for the experimental process, broken down into 5 steps to provide clear instructions： 
