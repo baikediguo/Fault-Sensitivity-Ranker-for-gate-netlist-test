@@ -207,3 +207,253 @@ pip install -r requirements.txt
 
 > 典型高敏感节点特征：位于关键路径、高扇出、近时序边界、重收敛区域、与输出节点嵌入相似度高。
 
+## 第四步 验证敏感节点有效性（manual_validation.py）
+这个程序实现了**电路节点敏感度验证系统**，通过故障注入仿真验证 GNN 预测的敏感节点是否真实有效。
+#### **1. 配置模块**
+```python
+# 基本配置
+VERILOG_SRC = 'pe.synth_dct.v'   # 网表文件
+TB_FILE = 'tb.v'                 # 测试平台文件
+CELL_LIB = 'cells.v'             # 工艺库文件
+RANK_FILE = 'gnn_rank.txt'       # GNN预测结果
+LOGDIR = 'sim_logs_manual'       # 日志目录
+TOPK = 1025                      # 验证前K个节点
+INJECT_DELAY_CYCLES = 5          # 故障注入延迟周期
+MAX_VVP_SECONDS = 60             # 仿真超时时间
+OSUM_HEX_RE = re.compile(r'^o_sum=([0-9a-fA-FxzXZ]+)')  # 输出匹配规则
+MAX_UNKNOWN_RATIO = 0.2          # 允许的未知值(X/Z)比例
+```
+**功能**：
+- 定义文件路径和关键参数
+- 设置故障注入策略（延迟周期、超时时间）
+- 指定输出信号解析规则（正则匹配）
+- 控制仿真质量（最大未知值比例）
+
+---
+
+#### **2. 核心子程序**
+
+##### **2.1 命令执行工具**
+```python
+def run_cmd(cmd: List[str], capture=False, timeout=None)
+```
+**功能**：
+- 安全执行 shell 命令
+- 支持输出捕获和超时控制
+- 处理编码问题（UTF-8/GBK 兼容）
+
+##### **2.2 Verilog 解析工具**
+```python
+def strip_comments(text: str)
+def extract_module(text: str, modname: str)
+def split_decl_names(decl_body: str)
+def parse_ports(module_text: str)
+def parse_internal_nets(module_text: str)
+def parse_targets_from_netlist(netlist_text: str, dut_module='pe')
+```
+**功能**：
+- 去除代码注释
+- 提取指定模块
+- 解析端口声明（input/output/inout）
+- 识别内部线网（wire/reg）
+- 生成可注入目标集合：`(输出端口 ∪ 内部线网) - 输入端口`
+
+##### **2.3 故障注入生成器**
+```python
+def make_injected_tb(tb_text: str, target_net: str, stuck: int)
+```
+**生成代码示例**：
+```verilog
+initial begin : __fi_block
+    wait (reset == 0);
+    repeat(5) @(posedge clock);
+    force uut.net_name = 1'b0;  // 固定为0
+    $display("FAULT_INJECTED: net_name sa0");
+end
+```
+**特点**：
+- 自动插入到 testbench
+- 复位释放后延迟注入
+- 添加注入标记便于日志解析
+
+##### **2.4 仿真流水线**
+```python
+def compile_and_run(sources, exe_path, vcd_path, log_path, timeout)
+```
+**工作流程**：
+1. 调用 `iverilog` 编译：  
+   `iverilog -g2012 cells.v design.v tb_injected.v -o sim.out`
+2. 执行 `vvp` 仿真：  
+   `vvp sim.out +DUMPFILE=wave.vcd`
+3. 日志重定向到文件
+4. 超时强制终止
+
+##### **2.5 结果分析器**
+```python
+def parse_osum_as_ints(logfile: str)
+```
+**处理逻辑**：
+1. 用正则 `o_sum=([0-9a-fA-FxzXZ]+)` 提取输出值
+2. 过滤含 X/Z 的未知值
+3. 计算未知值比例
+4. 返回有效数值列表
+
+##### **2.6 GNN 结果加载器**
+```python
+def load_gnn_topk(path: str, topk: int)
+```
+**功能**：
+- 读取 `gnn_rank.txt`
+- 取前 K 个节点名
+- 跳过空行和格式错误行
+
+---
+
+#### **3. 主验证流程** (`main()`)
+
+##### **3.1 Golden 参考仿真**
+```python
+# 运行无故障仿真
+compile_and_run([CELL_LIB, VERILOG_SRC, TB_FILE], ...)
+golden_vals, golden_unk = parse_osum_as_ints(golden_log)
+```
+**目的**：建立输出基准值
+
+##### **3.2 准备注入目标**
+```python
+legal_targets = set(parse_targets_from_netlist(net_text))
+gnn_topk = load_gnn_topk(RANK_FILE, TOPK)
+filtered_topk = [n for n in gnn_topk if n in legal_targets]
+```
+**过滤规则**：
+1. 必须是可注入目标（非输入端口）
+2. 排除时钟/复位信号（正则匹配）
+3. 保留网表存在的节点
+
+##### **3.3 故障注入循环**
+```python
+for i, net in enumerate(filtered_topk):
+    for val in [0, 1]:  # SA0 和 SA1
+        # 1. 生成注入版testbench
+        tb_inj = make_injected_tb(tb_src, net, val)
+        
+        # 2. 运行仿真
+        compile_and_run([CELL_LIB, VERILOG_SRC, tb_tmp], ...)
+        
+        # 3. 解析输出
+        vals, unk = parse_osum_as_ints(log)
+        
+        # 4. 结果比对
+        diff = sum(1 for a,b in zip(golden_vals, vals) if a != b)
+```
+**关键处理**：
+- 每个节点注入两种故障（SA0/SA1）
+- 忽略高未知值比例的无效仿真
+- 采样长度对齐（取 min(len_golden, len_fault)）
+
+##### **3.4 覆盖率统计**
+```python
+# 节点覆盖率
+node_cov = detected_nodes / len(filtered_topk) * 100
+
+# 故障覆盖率
+fault_cov = per_fault_detect / (len(filtered_topk)*2) * 100
+```
+**指标**：
+- **节点覆盖率**：至少被检测到一次故障的节点比例
+- **故障覆盖率**：所有注入故障中被检测到的比例
+
+---
+
+### **系统工作流**
+```mermaid
+graph TD
+    A[启动] --> B[Golden仿真]
+    B --> C[解析网表目标]
+    C --> D[加载GNN Top-K]
+    D --> E[过滤合法目标]
+    E --> F[故障注入循环]
+    F --> F1[SA0注入]
+    F --> F2[SA1注入]
+    F1 --> G[编译运行]
+    F2 --> G
+    G --> H[输出比对]
+    H --> I[统计覆盖率]
+    I --> J[生成报告]
+```
+
+### **创新设计亮点**
+
+1. **智能目标过滤**：
+   - 自动区分可注入/不可注入节点
+   - 排除时钟复位等无效目标
+   ```python
+   if n not in legal_targets or re.match(r'^(clk|rst)', n)
+   ```
+
+2. **未知值容错**：
+   ```python
+   if unk > MAX_UNKNOWN_RATIO:  # 跳过低质量仿真
+   ```
+
+3. **增量式进度反馈**：
+   ```python
+   if i%20==0: 
+       print(f"进度{i}/{total} 节点覆盖率={detected_nodes/i:.1%}")
+   ```
+
+4. **故障注入标准化**：
+   - 统一注入延迟（等待复位释放）
+   - 自动添加故障标记
+   ```verilog
+   $display("FAULT_INJECTED: net_name sa0");
+   ```
+
+5. **双维度覆盖率**：
+   - 节点级（Node Coverage）
+   - 故障级（Fault Coverage）
+
+### **典型输出报告**
+```
+=== manual_validation.py starting ===
+运行 golden 仿真（基准）...
+✅ golden 样本 512，unknown_ratio=0.00%
+🎯 验证节点数: 1025（示例前20）: [net1, net2, ...]
+进度 20/1025 — 节点累计检测=18/20，fault累计检测=33/40
+...
+进度 1025/1025 — 节点累计检测=892/1025，fault累计检测=1683/2050
+
+—— 统计 ——
+节点总数(验证): 1025
+检测到的节点数: 892
+节点覆盖率:     87.02%
+故障总数(节点*2): 2050
+检测到的故障数: 1683
+故障覆盖率:     82.10%
+⏱ 总耗时: 215.3s
+```
+
+### **技术挑战解决方案**
+
+1. **网表解析问题**：
+   - 使用正则+语法分析组合解析
+   - 处理复杂声明 `wire [7:0] a,b,c;`
+
+2. **仿真不稳定性**：
+   - 设置超时终止
+   - 未知值比例过滤
+   ```python
+   MAX_UNKNOWN_RATIO = 0.2  # >20% X/Z则丢弃
+   ```
+
+3. **信号匹配难题**：
+   - 统一输出格式规范
+   ```verilog
+   $display("o_sum=%h", value);  // 强制格式
+   ```
+
+4. **大规模仿真优化**：
+   - 并行空间设计（每个仿真独立目录）
+   - 进度分批反馈
+
+该系统为GNN预测提供了可靠的物理验证，通过自动化故障注入将算法预测与实际电路行为关联，形成完整的AI-EDA验证闭环。
