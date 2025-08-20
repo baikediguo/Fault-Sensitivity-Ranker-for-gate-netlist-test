@@ -685,4 +685,4 @@ graph TD
     K --> L[生成排名]
     L --> M[输出结果]
 ```
-## 第七步 验证 （仍然使用相的验证程序manual_validation.py）
+## 第七步 验证 （仍然使用第四步的验证程序manual_validation.py）
