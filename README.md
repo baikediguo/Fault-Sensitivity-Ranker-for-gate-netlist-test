@@ -246,7 +246,7 @@ graph TD
 ```
     1. 流程示意图：
     ```mermaid
-    graph LR
+    graph TD
     A[Verilog文件] --> B[AST解析]
     B --> C[识别实例和连线]
     C --> D[构建有向图]
