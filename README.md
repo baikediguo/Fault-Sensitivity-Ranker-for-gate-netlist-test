@@ -245,16 +245,16 @@ graph TD
     L --> M[排序输出]
 ```
     1. 流程示意图：
-    ```mermaid
-    graph TD
+```mermaid
+    graph LR
     A[Verilog文件] --> B[AST解析]
     B --> C[识别实例和连线]
     C --> D[构建有向图]
     D --> E[标记输出节点]
     D --> F[标记时序单元]
-    ```
+ ```
    2. 自监督学习(DGI)
-   ```mermaid
+```mermaid
     graph TD
     A[原始特征] --> B[GIN编码器]
     C[扰动特征] --> B
@@ -265,7 +265,7 @@ graph TD
     E --> G
     D --> G
     G --> H[损失计算]
-    ```
+ ```
 
 ## 第四步 验证敏感节点有效性（manual_validation.py）
 这个程序实现了**电路节点敏感度验证系统**，通过故障注入仿真验证 GNN 预测的敏感节点是否真实有效。
