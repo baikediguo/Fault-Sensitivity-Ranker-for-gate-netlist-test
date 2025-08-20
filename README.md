@@ -90,6 +90,7 @@ pip install -r requirements.txt
 在数字电路设计（Verilog / VHDL）里，testbench（测试平台/测试夹具） 是专门用来 验证电路设计是否正确的代码，它不是实际要综合进芯片的逻辑，而是一个仿真环境。
 
 Testbench 的作用
+
 1.功能验证 (Functional Verification)
 * 给 DUT（Design Under Test，被测设计）提供 输入激励（stimulus）。
 * 观察 DUT 的 输出结果，检查是否符合预期。
