@@ -87,6 +87,23 @@ pip install -r requirements.txt
      * 保留原始端口顺序以兼容LEC* 处理顺序元件的特殊寄存器输出
 
 ## 第二步 testbench 初始化（tb.v）
+在数字电路设计（Verilog / VHDL）里，testbench（测试平台/测试夹具） 是专门用来 验证电路设计是否正确的代码，它不是实际要综合进芯片的逻辑，而是一个仿真环境。
+
+Testbench 的作用
+1.功能验证 (Functional Verification)
+* 给 DUT（Design Under Test，被测设计）提供 输入激励（stimulus）。
+* 观察 DUT 的 输出结果，检查是否符合预期。
+
+2.自动化测试
+* Testbench 可以写断言 (assertions)、对比参考模型 (golden model) 输出，自动判断 PASS/FAIL。
+
+3. 仿真环境搭建
+* 包含时钟 (clock)、复位 (reset)、输入波形、输出采集。
+* 加文件读写、日志打印、波形转储 (VCD dump) 方便调试。
+
+4.故障注入 / 验证
+* 在容错设计研究中（比如你做的 fault injection），testbench 可以注入 force 信号，模拟翻转、卡死等硬件错误。
+  
 要求:
 * 将cells.v和tb.v放在同一个目录下
 * 测试平台（tb.v）必须正确实例化PE模块并映射端口
