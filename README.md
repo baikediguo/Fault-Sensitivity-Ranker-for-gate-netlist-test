@@ -616,25 +616,73 @@ graph LR
 3.解析网表并构图（parse_verilog_graph）
 
 * 节点两类：wire/net（type='wire'）
-
 * 实例 instance（type=单元名，如 NAND2X1、DFFX1）
-
 * 有向边：输入 net → 实例 → 输出 net
-
 * 通过常见端口名集合 {Z, ZN, Q, QN, OUT, Y, o_sum} 判断“输出口”，据此决定边方向，并记录“输出 net 集合”。
-
 * 特征工程（build_pyg_data）
-
 * 类型 one-hot：按 type（单元名/wire）做独热编码。
 
 4. 结构/拓扑特征（节点级）：
 
 * fanin（入度）、fanout（出度）
-
 * is_output（是否 PO or 汇点）
-
 * depth（从该点可达节点最短路最大深度，近似层级）
-
 * 到所有输出节点的最短路最小值/均值（未连通则 0，做了简单缩放）
 
+5.系统架构图
+```mermaid
+graph TD
+    A[Verilog网表文件] --> B[网表解析器]
+    C[敏感度标签文件] --> D[标签加载器]
+    B --> E[图结构构建]
+    E --> F[特征提取器]
+    D --> F
+    F --> G[PyG数据构建]
+    G --> H[深度GIN网络]
+    H --> I[节点敏感度预测]
+    I --> J[排名输出]
+```
+6.网表解析流程示意图
+```mermaid
+graph LR
+    A[Verilog文件] --> B[AST解析]
+    B --> C[识别实例和线网]
+    C --> D[构建有向图]
+    D --> E[标记输出节点]
+```
+7.GIN网络架构示意图
+```mermaid
+graph TD
+    A[输入特征] --> B[GIN卷积层1]
+    B --> C[批归一化]
+    C --> D[ReLU激活]
+    D --> E[Dropout]
+    E --> F[GIN卷积层2]
+    F --> G[批归一化]
+    G --> H[ReLU激活]
+    H --> I[Dropout]
+    I --> J[残差连接]
+    J --> K[GIN卷积层3]
+    K --> L[...]
+    L --> M[GIN卷积层N]
+    M --> N[线性输出层]
+    N --> O[预测分数]
+```
+8.训练和预测流程示意图
+```mermaid
+graph TD
+    A[加载标签] --> B[构建图数据]
+    B --> C[归一化标签]
+    C --> D[初始化模型]
+    D --> E[训练循环]
+    E --> F[前向传播]
+    F --> G[计算损失]
+    G --> H[反向传播]
+    H --> I[参数更新]
+    I --> J{达到最大 epoch?}
+    J -- 否 --> E
+    J -- 是 --> K[模型预测]
+    K --> L[生成排名]
+    L --> M[输出结果]
+```
 ## 第七步 验证 （仍然使用相的验证程序manual_validation.py）
