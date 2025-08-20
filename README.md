@@ -584,9 +584,10 @@ graph LR
     H --> I[过滤合法节点]
 ```
 5. 故障注入测试平台生成
+   
    def make_injected_tb(tb_text: str, target_net: str, stuck: int) -> str:
-    # 在测试平台中添加故障注入代码块
-    # 使用Verilog的force语句实现固定型故障
+    * 在测试平台中添加故障注入代码块
+    * 使用Verilog的force语句实现固定型故障
    
 6. 编译与仿真流程
 ```mermaid
