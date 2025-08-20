@@ -1,0 +1,308 @@
+# manual_validation.py
+import os
+import re
+import time
+import subprocess
+from typing import List, Tuple, Set
+
+# ===== 基本配置（按你的项目命名）=====
+VERILOG_SRC = 'pe.synth_dct.v'    # 网表
+TB_FILE     = 'tb.v'              # testbench，内含实例名 uut、信号 clock/reset、$display("o_sum=...") 打印
+CELL_LIB    = 'cells.v'           # 工艺库（务必存在）
+RANK_FILE   = 'gnn_rank.txt'      # GNN 预测结果（每行：节点名 分数）
+
+# 日志&临时文件目录
+LOGDIR = 'sim_logs_manual'
+os.makedirs(LOGDIR, exist_ok=True)
+
+# 选择前 K 个节点验证
+TOPK = 1025
+
+# 注入时序：等待 reset 释放，再延迟若干周期
+INJECT_DELAY_CYCLES = 5
+MAX_VVP_SECONDS     = 60
+
+# 输出行匹配（与你的 tb 打印一致）
+OSUM_HEX_RE = re.compile(r'^o_sum=([0-9a-fA-FxzXZ]+)')
+
+# 允许的未知比例（仿真里含 X/Z 太多的结果算无效）
+MAX_UNKNOWN_RATIO = 0.2
+
+
+# ---------- 子程序 ----------
+
+def run_cmd(cmd: List[str], capture=False, timeout=None) -> Tuple[int, str]:
+    """
+    执行命令；在 Windows 下用 UTF-8 并忽略不能解码的字符，避免 gbk 报错。
+    """
+    if capture:
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                text=True, encoding='utf-8', errors='ignore')
+        try:
+            out, _ = proc.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            return -1, 'TIMEOUT'
+        return proc.returncode, out
+    else:
+        try:
+            rc = subprocess.call(cmd)
+            return rc, ''
+        except Exception as e:
+            return -1, str(e)
+
+
+def strip_comments(text: str) -> str:
+    text = re.sub(r'/\*.*?\*/', '', text, flags=re.DOTALL)
+    text = re.sub(r'//.*', '', text)
+    return text
+
+
+def extract_module(text: str, modname: str) -> str:
+    m = re.search(rf'\bmodule\s+{re.escape(modname)}\b.*?\bendmodule\b', text, flags=re.DOTALL)
+    return m.group(0) if m else ''
+
+
+def split_decl_names(decl_body: str) -> List[str]:
+    out = []
+    decl_body = re.sub(r'\[[^]\n]*:[^]\n]*\]', '', decl_body)
+    for chunk in decl_body.split(','):
+        token = chunk.strip()
+        if not token:
+            continue
+        m = re.match(r'^([A-Za-z_][A-Za-z0-9_$]*)(\[\d+\])?$', token)
+        if m:
+            out.append(m.group(0))
+    return out
+
+
+def parse_ports(module_text: str) -> Tuple[Set[str], Set[str], Set[str]]:
+    inputs, outputs, inouts = set(), set(), set()
+    for stmt in module_text.split(';'):
+        s = stmt.strip()
+        if not s: continue
+        if re.match(r'^\binput\b', s):
+            body = re.sub(r'^\binput\b\s+((?:wire|reg|logic|signed|unsigned)\s+)*', '', s)
+            inputs.update(split_decl_names(body))
+        elif re.match(r'^\boutput\b', s):
+            body = re.sub(r'^\boutput\b\s+((?:wire|reg|logic|signed|unsigned)\s+)*', '', s)
+            outputs.update(split_decl_names(body))
+        elif re.match(r'^\binout\b', s):
+            body = re.sub(r'^\binout\b\s+((?:wire|reg|logic|signed|unsigned)\s+)*', '', s)
+            inouts.update(split_decl_names(body))
+    return inputs, outputs, inouts
+
+
+def parse_internal_nets(module_text: str) -> Set[str]:
+    nets = set()
+    for stmt in module_text.split(';'):
+        s = stmt.strip()
+        if not s: continue
+        if re.match(r'^(wire|reg|logic)\b', s):
+            body = re.sub(r'^(wire|reg|logic)\b\s+((?:signed|unsigned)\s+)?', '', s)
+            nets.update(split_decl_names(body))
+    return nets
+
+
+def parse_targets_from_netlist(netlist_text: str, dut_module: str = 'pe') -> List[str]:
+    """
+    注入集合：输出端口 ∪ 内部 nets − 输入端口；仅保留可 force 的合法名字（ID 或 ID[NUM]）
+    """
+    text = strip_comments(netlist_text)
+    mod = extract_module(text, dut_module)
+    if not mod:
+        mod = text
+    inputs, outputs, _ = parse_ports(mod)
+    internals = parse_internal_nets(mod)
+    targets = (outputs | internals) - inputs
+
+    good = []
+    for n in sorted(targets):
+        if re.match(r'^[A-Za-z_][A-Za-z0-9_$]*$', n) or re.match(r'^[A-Za-z_][A-Za-z0-9_$]*\[\d+\]$', n):
+            good.append(n)
+    return good
+
+
+def make_injected_tb(tb_text: str, target_net: str, stuck: int) -> str:
+    inj_block = f"""
+// --- fault injection block (auto) ---
+initial begin : __fi_block
+    wait (reset == 0);
+    repeat({INJECT_DELAY_CYCLES}) @(posedge clock);
+    force uut.{target_net} = 1'b{stuck};
+    $display("FAULT_INJECTED: {target_net} sa{stuck}");
+end
+// --- end injection block ---
+"""
+    idx = tb_text.rfind('endmodule')
+    if idx == -1:
+        return tb_text + '\n' + inj_block
+    else:
+        return tb_text[:idx] + inj_block + tb_text[idx:]
+
+
+def compile_and_run(sources: List[str], exe_path: str, vcd_path: str, log_path: str,
+                    timeout: int = MAX_VVP_SECONDS) -> bool:
+    """
+    Icarus 流程：iverilog -g2012 (cells, netlist, tb) + vvp +DUMPFILE
+    日志统一写入 log_path；返回 True/False
+    """
+    # 先编译
+    cmd_compile = ['iverilog', '-g2012', '-o', exe_path] + [os.path.abspath(s) for s in sources]
+    rc, out = run_cmd(cmd_compile, capture=True)
+    if rc != 0:
+        with open(log_path, 'w', encoding='utf-8', errors='ignore') as f:
+            f.write(out)
+        return False
+
+    # 再运行
+    cmd_run = ['vvp', exe_path, f'+DUMPFILE={vcd_path}']
+    with open(log_path, 'w', encoding='utf-8', errors='ignore') as f:
+        try:
+            proc = subprocess.Popen(cmd_run, stdout=f, stderr=subprocess.STDOUT,
+                                    text=True, encoding='utf-8', errors='ignore')
+            proc.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            f.write('\n[ERROR] vvp TIMEOUT\n')
+            return False
+
+    return True
+
+
+def parse_osum_as_ints(logfile: str) -> Tuple[List[int], float]:
+    vals, total, unknown = [], 0, 0
+    try:
+        with open(logfile, 'r', encoding='utf-8', errors='ignore') as f:
+            for line in f:
+                m = OSUM_HEX_RE.match(line.strip())
+                if not m:
+                    continue
+                total += 1
+                s = m.group(1).lower()
+                if 'x' in s or 'z' in s:
+                    unknown += 1
+                    continue
+                try:
+                    vals.append(int(s, 16))
+                except ValueError:
+                    unknown += 1
+    except Exception as e:
+        print(f'⚠️ 读取 {logfile} 失败: {e}')
+    unk_ratio = (unknown / total) if total > 0 else 1.0
+    return vals, unk_ratio
+
+
+def load_gnn_topk(path: str, topk: int) -> List[str]:
+    if not os.path.exists(path):
+        print(f'❌ 未找到 {path}')
+        return []
+    nodes = []
+    with open(path, 'r', encoding='utf-8', errors='ignore') as f:
+        for line in f:
+            line = line.strip()
+            if not line: continue
+            parts = line.split()
+            if len(parts) >= 1:
+                nodes.append(parts[0])
+    return nodes[:topk]
+
+
+# ---------- 主流程 ----------
+
+def main():
+    t0 = time.time()
+    print('=== manual_validation.py starting ===')
+
+    # 1) 生成 golden
+    print('运行 golden 仿真（基准）...')
+    golden_exe = os.path.join(LOGDIR, 'golden.out')
+    golden_vcd = os.path.join(LOGDIR, 'golden.vcd')
+    golden_log = os.path.join(LOGDIR, 'golden.log')
+    ok = compile_and_run([CELL_LIB, VERILOG_SRC, TB_FILE], golden_exe, golden_vcd, golden_log,
+                         timeout=MAX_VVP_SECONDS)
+    if not ok:
+        print('❌ Golden 仿真失败')
+        with open(golden_log, 'r', encoding='utf-8', errors='ignore') as f:
+            print(f.read())
+        return
+    golden_vals, golden_unk = parse_osum_as_ints(golden_log)
+    if not golden_vals:
+        print('❌ golden.log 没有有效的 o_sum 样本')
+        return
+    print(f'✅ golden 样本 {len(golden_vals)}，unknown_ratio={golden_unk:.2%}')
+
+    # 2) 解析可注入的合法目标（从网表）
+    with open(VERILOG_SRC, 'r', encoding='utf-8', errors='ignore') as f:
+        net_text = f.read()
+    legal_targets = set(parse_targets_from_netlist(net_text, dut_module='pe'))
+
+    # 3) 读取 GNN 排名前 K，并与合法目标求交集
+    gnn_topk = load_gnn_topk(RANK_FILE, TOPK)
+    filtered_topk = [n for n in gnn_topk if n in legal_targets
+                     and not re.match(r'^(clk|clock|rst|reset|in)', n, flags=re.IGNORECASE)]
+    if not filtered_topk:
+        print('❌ GNN 前 K 与可注入目标无交集')
+        return
+
+    print(f'🎯 验证节点数: {len(filtered_topk)}（示例前20）: {filtered_topk[:20]}')
+
+    # 4) 遍历每个节点，分别注入 sa0/sa1，任一造成输出差异即记为“检测到”
+    detected_nodes = 0
+    per_fault_detect = 0   # 可选：统计 (node, saX) 粒度
+    total_faults = len(filtered_topk) * 2
+
+    with open(TB_FILE, 'r', encoding='utf-8', errors='ignore') as f:
+        tb_src = f.read()
+
+    for i, net in enumerate(filtered_topk, 1):
+        node_detected = False
+        for val in [0, 1]:
+            tb_inj = make_injected_tb(tb_src, net, val)
+            tb_tmp = os.path.join(LOGDIR, f'tb_inj_{i}_sa{val}.v')
+            with open(tb_tmp, 'w', encoding='utf-8', errors='ignore') as w:
+                w.write(tb_inj)
+
+            exe = os.path.join(LOGDIR, f'sim_{i}_sa{val}.out')
+            vcd = os.path.join(LOGDIR, f'sim_{i}_sa{val}.vcd')
+            log = os.path.join(LOGDIR, f'sim_{i}_sa{val}.log')
+
+            ok = compile_and_run([CELL_LIB, VERILOG_SRC, tb_tmp], exe, vcd, log, timeout=MAX_VVP_SECONDS)
+            if not ok:
+                # 编译/仿真失败，认为本 fault 未检测；继续下一个
+                continue
+
+            vals, unk = parse_osum_as_ints(log)
+            if not vals or unk > MAX_UNKNOWN_RATIO:
+                # 输出无效（X/Z 太多或没采样），记为未检测该 fault
+                continue
+
+            L = min(len(golden_vals), len(vals))
+            diff = sum(1 for a, b in zip(golden_vals[:L], vals[:L]) if a != b)
+            if diff > 0:
+                node_detected = True
+                per_fault_detect += 1
+
+        if node_detected:
+            detected_nodes += 1
+
+        if i % 20 == 0 or i == len(filtered_topk):
+            print(f'进度 {i}/{len(filtered_topk)} — 节点累计检测={detected_nodes}/{i}，'
+                  f'fault累计检测={per_fault_detect}/{i*2}')
+
+    # 5) 统计
+    node_cov = detected_nodes / len(filtered_topk) * 100.0
+    fault_cov = per_fault_detect / total_faults * 100.0
+
+    print('\n—— 统计 ——')
+    print(f'节点总数(验证): {len(filtered_topk)}')
+    print(f'检测到的节点数: {detected_nodes}')
+    print(f'节点覆盖率:     {node_cov:.2f}%')
+    print(f'故障总数(节点*2): {total_faults}')
+    print(f'检测到的故障数: {per_fault_detect}')
+    print(f'故障覆盖率:     {fault_cov:.2f}%')
+    print(f'⏱ 总耗时: {time.time() - t0:.1f}s')
+
+
+if __name__ == '__main__':
+    main()
