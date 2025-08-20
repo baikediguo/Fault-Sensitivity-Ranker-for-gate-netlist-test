@@ -1,0 +1,231 @@
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import random
+import numpy as np
+from torch_geometric.data import Data
+from torch_geometric.nn import GINConv, BatchNorm
+import networkx as nx
+import os
+from pyverilog.vparser.parser import parse
+
+# 固定随机种子
+def set_seed(seed=42):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+set_seed(42)
+
+# 文件路径
+VERILOG_FILE = 'pe.synth_dct.v'
+LABEL_FILE = 'sensitive_node_score.txt'
+OUTPUT_FILE = 'gnn_rank.txt'
+
+def get_node_name(net):
+    if hasattr(net, 'name'):
+        return str(net.name)
+    elif hasattr(net, 'var') and hasattr(net, 'ptr'):
+        return f"{get_node_name(net.var)}[{get_node_name(net.ptr)}]"
+    elif isinstance(net, str):
+        return net
+    return str(net)
+
+def parse_verilog_graph(filepath):
+    ast, _ = parse([filepath])
+    G = nx.DiGraph()
+    id_counter = 0
+    node_map = {}
+
+    def add_node(name, attrs):
+        nonlocal id_counter
+        if name not in node_map:
+            node_map[name] = id_counter
+            G.add_node(id_counter, name=name, **attrs)
+            id_counter += 1
+        return node_map[name]
+
+    output_nodes = set()
+
+    def extract_modules(node):
+        if hasattr(node, 'children'):
+            for c in node.children():
+                if c.__class__.__name__ == 'InstanceList':
+                    for inst in c.instances:
+                        inst_name = get_node_name(inst.name)
+                        cell_type = c.module
+                        for cport in inst.portlist:
+                            port_name = cport.portname
+                            net_name = get_node_name(cport.argname).replace('.', '_')
+                            src = add_node(net_name, {'type': 'wire'})
+                            tgt = add_node(inst_name, {'type': cell_type})
+                            if port_name.upper() in {'Z', 'ZN', 'Q', 'QN', 'OUT', 'Y', 'o_sum'}:
+                                G.add_edge(tgt, src)
+                                output_nodes.add(src)
+                            else:
+                                G.add_edge(src, tgt)
+                extract_modules(c)
+    extract_modules(ast)
+    return G, node_map, output_nodes
+
+def build_pyg_data(G, label_map, output_nodes):
+    # gate type one-hot
+    type_set = set(G.nodes[i].get('type', 'UNK') for i in G.nodes)
+    type_list = sorted(list(type_set))
+    type2idx = {t: idx for idx, t in enumerate(type_list)}
+
+    output_ids = set([i for i in G.nodes if G.out_degree(i) == 0 or i in output_nodes])
+    pagerank = nx.pagerank(G, alpha=0.85)
+    pagerank_max = max(pagerank.values()) if len(pagerank)>0 else 1.0
+
+    features = []
+    labels = []
+    name_list = []
+
+    for i in range(len(G.nodes)):
+        node_data = G.nodes[i]
+        name = node_data['name']
+        gate_type = node_data.get('type', 'UNK')
+
+        # gate type one-hot
+        type_feat = [0]*len(type2idx)
+        type_feat[type2idx[gate_type]] = 1
+
+        is_output = int(i in output_ids)
+        fanin = G.in_degree(i)
+        fanout = G.out_degree(i)
+        try:
+            depth = max(nx.single_source_shortest_path_length(G, i).values())
+        except:
+            depth = 0
+
+        # 距离所有输出节点的最短距离均值、最小值
+        dists = []
+        for t in output_ids:
+            try:
+                dists.append(nx.shortest_path_length(G, i, t))
+            except:
+                pass
+        min_dist = min(dists) if dists else 0
+        mean_dist = sum(dists)/len(dists) if dists else 0
+
+        # pagerank
+        pr = pagerank.get(i, 0.0) / pagerank_max
+
+        feat = []
+        feat += type_feat
+        feat += [
+            fanin / 10.0,
+            fanout / 10.0,
+            is_output,
+            depth / 20.0,
+            min_dist / 20.0,
+            mean_dist / 20.0,
+            pr,
+            len(name) / 20.0
+        ]
+        features.append(feat)
+        labels.append(label_map.get(name, 0.0))
+        name_list.append(name)
+
+    x = torch.tensor(features, dtype=torch.float)
+    y = torch.tensor(labels, dtype=torch.float).unsqueeze(1)
+    edge_index = torch.tensor(list(G.edges)).t().contiguous()
+
+    data = Data(x=x, edge_index=edge_index, y=y)
+    data.node_names = name_list
+    return data
+
+def load_labels(label_file):
+    label_map = {}
+    if not os.path.exists(label_file):
+        print("⚠️ 标签文件不存在，跳过训练")
+        return label_map
+    with open(label_file) as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith('#'):
+                continue
+            parts = line.split()
+            if len(parts) >= 2:
+                name, score = parts[0], parts[1]
+                try:
+                    label_map[name] = float(score)
+                except ValueError:
+                    pass
+    return label_map
+
+# 深层GIN结构+残差+BatchNorm
+class DeepGINNet(nn.Module):
+    def __init__(self, input_dim, hidden_dim=128, num_layers=5, dropout=0.25):
+        super(DeepGINNet, self).__init__()
+        self.num_layers = num_layers
+        self.dropout = dropout
+        self.convs = nn.ModuleList()
+        self.bns = nn.ModuleList()
+        for i in range(num_layers):
+            in_dim = input_dim if i == 0 else hidden_dim
+            nn_layer = nn.Sequential(
+                nn.Linear(in_dim, hidden_dim),
+                nn.ReLU(),
+                nn.Linear(hidden_dim, hidden_dim),
+                nn.ReLU()
+            )
+            self.convs.append(GINConv(nn_layer))
+            self.bns.append(BatchNorm(hidden_dim))
+        self.fc = nn.Linear(hidden_dim, 1)
+
+    def forward(self, data):
+        x, edge_index = data.x, data.edge_index
+        for i in range(self.num_layers):
+            h = self.convs[i](x, edge_index)
+            h = self.bns[i](h)
+            h = F.relu(h)
+            h = F.dropout(h, p=self.dropout, training=self.training)
+            x = h + x if i > 0 else h  # 残差连接
+        return self.fc(x)
+
+def main():
+    label_map = load_labels(LABEL_FILE)
+    if len(label_map) < 10:
+        print("⚠️ 标签数量不足（<10），跳过训练")
+        return
+
+    G, _, output_nodes = parse_verilog_graph(VERILOG_FILE)
+    data = build_pyg_data(G, label_map, output_nodes)
+
+    # 标签归一化
+    max_score = float(data.y.max())
+    if max_score > 0:
+        data.y = data.y / max_score
+
+    model = DeepGINNet(input_dim=data.x.shape[1], hidden_dim=128, num_layers=5, dropout=0.25)
+    optimizer = torch.optim.Adam(model.parameters(), lr=0.01)
+    loss_fn = nn.MSELoss()
+
+    for epoch in range(200):
+        model.train()
+        optimizer.zero_grad()
+        out = model(data)
+        loss = loss_fn(out, data.y)
+        loss.backward()
+        optimizer.step()
+        if epoch % 10 == 0:
+            print(f"[Epoch {epoch}] Loss: {loss.item():.4f}")
+
+    # 排名输出
+    model.eval()
+    with torch.no_grad():
+        scores = model(data).squeeze().tolist()
+        ranked = list(zip(data.node_names, scores))
+        ranked.sort(key=lambda x: -x[1])
+
+        with open(OUTPUT_FILE, 'w') as f:
+            for name, score in ranked:
+                f.write(f"{name} {score:.4f}\n")
+
+        print(f"\n✅ 排名结果已保存至 {OUTPUT_FILE}")
+
+if __name__ == "__main__":
+    main()
