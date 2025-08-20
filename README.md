@@ -18,7 +18,7 @@
 
 * 敏感度高的网点往往位于高扇出、强收敛或近时序边界位置，对测试可观测/可控性影响大。
 
-* 排名结果可直接为 ATPG 目标化、观察点/控制点插入、选择性 TMR/ECC/Parity 加固提供量化依据。
+* 排名结果可直接为 ATPG 目标化、观察点/控制点插入、选择性 TMR/ECC/Parity 加固提供量化依据。（Triple Modular Redundancy/Error-Correcting Code/Parity Check）
 
 4.可靠性与可制造性（Yield/Reliability）提升
 
