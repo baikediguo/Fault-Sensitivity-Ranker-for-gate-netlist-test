@@ -103,7 +103,7 @@ Testbench 的作用
 * 加文件读写、日志打印、波形转储 (VCD dump) 方便调试。
 
 4.故障注入 / 验证
-* 在容错设计研究中（比如你做的 fault injection），testbench 可以注入 force 信号，模拟翻转、卡死等硬件错误。
+* 在容错设计研究中（比如 fault injection），testbench 可以注入 force 信号，模拟翻转、卡死等硬件错误。
   
 要求:
 * 将cells.v和tb.v放在同一个目录下
