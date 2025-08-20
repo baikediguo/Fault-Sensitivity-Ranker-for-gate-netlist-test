@@ -1,4 +1,11 @@
-# Fault-Sensitivity-Ranker-for-gate-netlist-test
+# Project Title:  Fault-Sensitivity-Ranker-for-gate-netlist-test
+
+[English](README.md) | [中文说明](README_zh.md)
+
+This is the English README...
+
+
+
 本项目旨在构建一个故障点智能选取系统（“故障敏感度评分器”）：在不进行显式故障注入的前提下，利用电路网表的结构/拓扑特征与图神经网络（GNN）自监督表征，对每个节点的故障敏感度进行打分与排序（Top-K）。随后仅对高分节点做少量注入仿真进行验证，从而在保证覆盖率可观的同时，显著减少仿真次数与验证成本。该系统面向 DFT/验证/可靠性工程流程，目标是成为“测试向导（test guidance）”——把资源优先投向更可能出问题、对系统行为更关键的节点。
 
 ## 为什么要“尽早识别敏感节点”？——具体收益
