@@ -1,0 +1,266 @@
+import os
+import re
+import time
+import subprocess
+from typing import List, Tuple, Set
+
+# ===== 配置 =====
+ORIGINAL_NETLIST = 'pe.synth_dct.v'
+TB_TEMPLATE      = 'tb.v'          # 你的 testbench 文件，内含 DUT 实例名 uut
+CELL_LIB         = 'cells.v'
+LOGDIR           = 'sim_logs'
+os.makedirs(LOGDIR, exist_ok=True)
+
+STUCK_VALUES     = [0, 1]
+SCORE_OUTPUT     = 'sensitive_node_score.txt'
+
+# 注入时序
+INJECT_DELAY_CYCLES = 5
+MAX_VVP_SECONDS     = 60
+
+MAX_UNKNOWN_RATIO   = 0.2
+
+# 匹配 tb 打印的 o_sum 十六进制行（按你现有格式）
+OSUM_HEX_RE = re.compile(r'^o_sum=([0-9a-fA-FxzXZ]+)')
+
+# ----------- 工具函数 -----------
+
+def run_cmd(cmd: List[str], capture=False) -> Tuple[int, str]:
+    if capture:
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        out, _ = proc.communicate()
+        return proc.returncode, out
+    else:
+        rc = subprocess.call(cmd)
+        return rc, ''
+
+def strip_comments(text: str) -> str:
+    """去掉 // 行注释 与 /* ... */ 块注释"""
+    # 去掉块注释
+    text = re.sub(r'/\*.*?\*/', '', text, flags=re.DOTALL)
+    # 去掉行注释
+    text = re.sub(r'//.*', '', text)
+    return text
+
+def extract_module(text: str, modname: str) -> str:
+    """抽取 module modname ... endmodule 的正文（包含端口与声明）"""
+    m = re.search(rf'\bmodule\s+{re.escape(modname)}\b.*?\bendmodule\b', text, flags=re.DOTALL)
+    return m.group(0) if m else ''
+
+def split_decl_names(decl_body: str) -> List[str]:
+    """
+    将诸如 ' [7:0] a, b , c [3], d ' 之类的声明体拆成标识符/位选择。
+    仅保留形如 ID 或 ID[NUM] 的形式。
+    """
+    out = []
+    # 去掉位宽 [m:n]
+    decl_body = re.sub(r'\[[^]\n]*:[^]\n]*\]', '', decl_body)
+    # 用逗号分隔，再各自 strip
+    for chunk in decl_body.split(','):
+        token = chunk.strip()
+        if not token:
+            continue
+        # 只保留 “标识符 + 可选 [数字]” 这样的形式
+        m = re.match(r'^([A-Za-z_][A-Za-z0-9_$]*)(\[\d+\])?$', token)
+        if m:
+            out.append(m.group(0))
+    return out
+
+def parse_ports(module_text: str) -> Tuple[Set[str], Set[str], Set[str]]:
+    """解析端口方向集合 (inputs, outputs, inouts)"""
+    inputs, outputs, inouts = set(), set(), set()
+    # 方向声明可能跨行，按 ; 拆句
+    for stmt in module_text.split(';'):
+        s = stmt.strip()
+        if not s:
+            continue
+        if re.match(r'^\binput\b', s):
+            body = re.sub(r'^\binput\b\s+((?:wire|reg|logic|signed|unsigned)\s+)*', '', s)
+            inputs.update(split_decl_names(body))
+        elif re.match(r'^\boutput\b', s):
+            body = re.sub(r'^\boutput\b\s+((?:wire|reg|logic|signed|unsigned)\s+)*', '', s)
+            outputs.update(split_decl_names(body))
+        elif re.match(r'^\binout\b', s):
+            body = re.sub(r'^\binout\b\s+((?:wire|reg|logic|signed|unsigned)\s+)*', '', s)
+            inouts.update(split_decl_names(body))
+    return inputs, outputs, inouts
+
+def parse_internal_nets(module_text: str) -> Set[str]:
+    """解析内部 wire/reg/logic 声明（不包含端口方向声明）"""
+    nets = set()
+    # 仅匹配独立声明起头为 wire/reg/logic 的语句
+    for stmt in module_text.split(';'):
+        s = stmt.strip()
+        if not s:
+            continue
+        if re.match(r'^(wire|reg|logic)\b', s):
+            # 去掉起始关键字与可能的修饰
+            body = re.sub(r'^(wire|reg|logic)\b\s+((?:signed|unsigned)\s+)?', '', s)
+            nets.update(split_decl_names(body))
+    return nets
+
+def parse_targets_from_netlist(netlist_text: str, dut_module: str = 'pe') -> List[str]:
+    """
+    目标：只注入 DUT 输出端口与内部 nets，不注入输入端口。
+    同时保证名字是合法可 force 的层次名（不含奇怪符号）。
+    """
+    text = strip_comments(netlist_text)
+    mod = extract_module(text, dut_module)
+    if not mod:
+        # 兜底：整网表里做一次极保守解析（不推荐，但避免空集合）
+        mod = text
+
+    inputs, outputs, _ = parse_ports(mod)
+    internals = parse_internal_nets(mod)
+
+    # 目标 = 输出 ∪ 内部 − 输入
+    targets = (outputs | internals) - inputs
+
+    # 最终只保留合法 ID 或 ID[NUM]
+    good = []
+    for n in sorted(targets):
+        if re.match(r'^[A-Za-z_][A-Za-z0-9_$]*$', n) or re.match(r'^[A-Za-z_][A-Za-z0-9_$]*\[\d+\]$', n):
+            good.append(n)
+    return good
+
+# —— 在 tb 中追加注入块 —— #
+def make_injected_tb(tb_text: str, target_net: str, stuck: int) -> str:
+    inj_block = f"""
+// --- fault injection block (auto) ---
+initial begin : __fi_block
+    // 等待复位释放后，再延迟若干周期注入
+    wait (reset == 0);
+    repeat({INJECT_DELAY_CYCLES}) @(posedge clock);
+    force uut.{target_net} = 1'b{stuck};
+    $display("FAULT_INJECTED: {target_net} sa{stuck}");
+end
+// --- end injection block ---
+"""
+    idx = tb_text.rfind('endmodule')
+    if idx == -1:
+        return tb_text + '\n' + inj_block
+    else:
+        return tb_text[:idx] + inj_block + tb_text[idx:]
+
+# —— 编译 + 运行 —— #
+def simulate(tb_file: str, logfile: str) -> bool:
+    simv = os.path.join(LOGDIR, 'simv')
+    vcd  = os.path.splitext(logfile)[0] + '.vcd'
+    compile_cmd = ['iverilog', '-g2012', '-o', simv,
+                   os.path.abspath(CELL_LIB),
+                   os.path.abspath(ORIGINAL_NETLIST),
+                   os.path.abspath(tb_file)]
+    rc, out = run_cmd(compile_cmd, capture=True)
+    if rc != 0:
+        print('❌ iverilog 编译失败\n', out)
+        return False
+
+    with open(logfile, 'w', encoding='utf-8') as fo:
+        proc = subprocess.Popen(['vvp', simv, f'+DUMPFILE={vcd}'],
+                                stdout=fo, stderr=subprocess.STDOUT, text=True)
+        try:
+            proc.wait(timeout=MAX_VVP_SECONDS)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            print('❌ vvp 仿真超时')
+            return False
+    if proc.returncode != 0:
+        print(f'❌ vvp 退出码 {proc.returncode}')
+        return False
+    return True
+
+# —— 解析 o_sum 日志 —— #
+def parse_osum_as_ints(logfile: str) -> Tuple[List[int], float]:
+    vals = []
+    total = 0
+    unknown = 0
+    try:
+        with open(logfile, 'r', encoding='utf-8', errors='ignore') as f:
+            for line in f:
+                m = OSUM_HEX_RE.match(line.strip())
+                if not m:
+                    continue
+                total += 1
+                s = m.group(1).lower()
+                if 'x' in s or 'z' in s:
+                    unknown += 1
+                    continue
+                try:
+                    vals.append(int(s, 16))
+                except ValueError:
+                    unknown += 1
+    except Exception as e:
+        print(f'⚠️ 读取 {logfile} 失败: {e}')
+    unk_ratio = (unknown / total) if total > 0 else 1.0
+    return vals, unk_ratio
+
+def main():
+    t0 = time.time()
+
+    print('⚡ 生成 golden...')
+    golden_log = os.path.join(LOGDIR, 'golden.log')
+    if not simulate(TB_TEMPLATE, golden_log):
+        print('❌ Golden 失败，退出')
+        return
+    golden_vals, golden_unk = parse_osum_as_ints(golden_log)
+    if not golden_vals:
+        print('❌ golden.log 没有有效的 o_sum 样本')
+        return
+    print(f'✅ golden 样本数={len(golden_vals)}, unknown 比例={golden_unk:.2%}')
+
+    with open(ORIGINAL_NETLIST, 'r', encoding='utf-8', errors='ignore') as f:
+        net_text = f.read()
+    targets = parse_targets_from_netlist(net_text, dut_module='pe')
+    print(f'🎯 注入目标（输出端口 ∪ 内部 nets，排除输入）：共 {len(targets)} 个，例如: {targets[:8]}')
+
+    with open(TB_TEMPLATE, 'r', encoding='utf-8', errors='ignore') as f:
+        tb_src = f.read()
+
+    node_scores = {}
+    total_runs = 0
+
+    for i, net in enumerate(targets, 1):
+        total_diff = 0
+        valid_any = False
+        for val in STUCK_VALUES:
+            tb_inj = make_injected_tb(tb_src, net, val)
+            tmp_tb = os.path.join(LOGDIR, 'tb_inj.v')
+            with open(tmp_tb, 'w', encoding='utf-8') as w:
+                w.write(tb_inj)
+            log = os.path.join(LOGDIR, f'fi_{re.sub(r"[^A-Za-z0-9_$\[\]]", "_", net)}_sa{val}.log')
+
+            ok = simulate(tmp_tb, log)
+            os.remove(tmp_tb)
+            if not ok:
+                continue
+
+            vals, unk = parse_osum_as_ints(log)
+            if not vals or unk > MAX_UNKNOWN_RATIO:
+                continue
+
+            L = min(len(golden_vals), len(vals))
+            diff = sum(1 for a, b in zip(golden_vals[:L], vals[:L]) if a != b)
+            total_diff += diff
+            valid_any = True
+            total_runs += 1
+
+        node_scores[net] = total_diff if valid_any else 0
+
+        if i % 50 == 0:
+            print(f'进度 {i}/{len(targets)} — 最近节点分数={node_scores[net]}')
+
+    with open(SCORE_OUTPUT, 'w', encoding='utf-8') as f:
+        for n, s in node_scores.items():
+            f.write(f'{n} {s}\n')
+
+    elapsed = time.time() - t0
+    nonzero = sum(1 for s in node_scores.values() if s > 0)
+    print('—— 统计 ——')
+    print(f'已注入目标数: {len(targets)}')
+    print(f'有效仿真次数: {total_runs}')
+    print(f'非零分节点数: {nonzero} ({(nonzero/len(targets) if targets else 0):.2%})')
+    print(f'输出: {SCORE_OUTPUT}')
+    print(f'⏱️ 总耗时: {elapsed:.2f}s')
+
+if __name__ == '__main__':
+    main()
