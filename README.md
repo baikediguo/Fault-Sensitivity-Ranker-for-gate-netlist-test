@@ -520,7 +520,7 @@ graph TD
 
 
 ## 第五步：为了进一步验证以上程序的准确性，我又进行了先故障注入后提取特征的算法，即使用AI在显式注入故障的情况下，对 Verilog 电路网表中每个节点的故障可能性进行预测或排序（gatesa_fault_injection）
-1. 系统由三个核心模块组成
+1. 系统由三个核心模块和一个验证模块组成
 
 * 故障注入程序 (gatesa_fault_injection.py 或类似)	往 Verilog 节点强制注入故障（force），运行 Icarus Verilog 仿真，生成节点的敏感性检测结果	日志文件 (sim_logs/...) 或 CSV
 * GNN 模型预测程序 (verilog_fault_ranker.py 或 GNN 训练/推理脚本)	根据 Verilog 网表结构特征，预测每个节点的故障敏感度分数，输出排序文件	gnn_rank.txt
@@ -552,25 +552,51 @@ graph TD
 * 输出：覆盖率、详细日志、Spearman 相关性等指标
 
 
-3. 数据流示意图
+3. 系统架构图
+```mermaid
+graph TD
+    A[Verilog网表文件] --> B[网表解析器]
+    A --> C[测试平台模板]
+    B --> D[目标节点识别]
+    D --> E[故障注入循环]
+    C --> F[测试平台生成器]
+    E --> F
+    F --> G[编译与仿真]
+    G --> H[输出日志分析]
+    I[黄金参考仿真] --> J[黄金输出]
+    H --> K[差异比较]
+    J --> K
+    K --> L[敏感度评分]
+    L --> M[结果输出]
+```
 
-  Verilog 网表
-      │
-      ▼
-┌─────────────┐
-│ 故障注入程序 │───> 真实标签集 (sim_logs)
-└─────────────┘
-      │
-      ▼
-┌──────────────┐
-│  GNN预测程序 │───> gnn_rank.txt
-└──────────────┘
-      │
-      ▼
-┌─────────────────┐
-│ manual_validation│───> 覆盖率统计 / 相关性评估
-└─────────────────┘
-
+4.网表解析流程示意图：
+```mermaid
+graph LR
+    A[网表文件] --> B[去除注释]
+    B --> C[提取目标模块]
+    C --> D[解析端口方向]
+    C --> E[解析内部节点]
+    D --> F[识别输出端口]
+    E --> G[识别内部节点]
+    F --> H[目标节点集合]
+    G --> H
+    H --> I[过滤合法节点]
+```
+5. 故障注入测试平台生成
+   def make_injected_tb(tb_text: str, target_net: str, stuck: int) -> str:
+    # 在测试平台中添加故障注入代码块
+    # 使用Verilog的force语句实现固定型故障
+   
+6. 编译与仿真流程
+```mermaid
+   graph TD
+    A[测试平台文件] --> B[iverilog编译]
+    B --> C[生成仿真可执行文件]
+    C --> D[vvp仿真]
+    D --> E[输出日志文件]
+    D --> F[VCD波形文件]
+```
 
 ## 第六步 模型构建程序 verilog_fault_ranker.py(GNN预测程序) 
 1.提供一个基于 PyVerilog → NetworkX → PyTorch Geometric (GINConv) 的端到端流程：
