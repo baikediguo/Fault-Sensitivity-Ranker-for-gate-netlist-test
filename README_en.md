@@ -119,12 +119,12 @@ graph TD
  ```
    2. Self-Supervised Learning (DGI)
 ```mermaid
-   graph TD
+    graph TD
     A[Raw Features] --> B[GIN Encoder]
     C[Corrupted Features] --> B
-    B --> D[Node Embeddings (H)]
-    B --> E[Corrupted Embeddings (H_corrupt)]
-    D --> F[Graph-Level Summary (s)]
+    B --> D[Node Embeddings H]
+    B --> E[Corrupted Embeddings H_corrupt]
+    D --> F[Graph Summary s]
     F --> G[Discriminator]
     E --> G
     D --> G
