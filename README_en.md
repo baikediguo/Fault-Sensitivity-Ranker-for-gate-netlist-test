@@ -178,8 +178,7 @@ graph TD
     L --> M[Result Output]
 ```
 3. Diagram of the Netlist parsing process
-
-   ```mermaid
+ ```mermaid
 graph LR
     A[Netlist File] --> B[Remove Comments]
     B --> C[Extract Target Module]
@@ -216,7 +215,7 @@ graph TD
     I --> J[Ranking Output]
 ```
 2. Netlist Parsing Flowchart
-  ```mermaid
+ ```mermaid
 graph LR
     A[Verilog File] --> B[AST Parsing]
     B --> C[Identify Instances and Nets]
@@ -224,7 +223,7 @@ graph LR
     D --> E[Mark Output Nodes]
 ```
 3. GIN Network Architecture Diagram
-   ```mermaid
+  ```mermaid
 graph TD
     A[Input Features] --> B[GIN Convolutional Layer 1]
     B --> C[Batch Normalization]
