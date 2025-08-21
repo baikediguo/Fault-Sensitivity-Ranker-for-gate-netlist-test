@@ -71,7 +71,7 @@ Alternatively, if you prefer to install the dependencies step-by-step, please fo
  
 ## Below is a detailed guide for the experimental process, broken down into 5 steps to provide clear instructions： 
 
-## Step 1: Configure standard cell library (I directly provided it; for different Netlist, detailed code generation can be seen (https://github.com/baikediguo/fusa/blob/main/generate_cell_code.py).)
+## Step 1: Configure standard cell library (I directly provided it; for different Netlist, detailed code generation can be seen [fusa.github](https://github.com/baikediguo/fusa/blob/main/generate_cell_code.py) ）)
 
    Script: generate_cell.code.py
    Input: Synthesized netlist file pe.synth_dct.v
@@ -119,7 +119,7 @@ graph TD
  ```
    2. Self-Supervised Learning (DGI)
 ```mermaid
-    graph TD
+   graph TD
     A[Raw Features] --> B[GIN Encoder]
     C[Corrupted Features] --> B
     B --> D[Node Embeddings (H)]
@@ -129,4 +129,4 @@ graph TD
     E --> G
     D --> G
     G --> H[Loss Calculation]
-```
+ ```
