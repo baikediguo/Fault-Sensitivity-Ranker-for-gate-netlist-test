@@ -69,4 +69,64 @@ Alternatively, if you prefer to install the dependencies step-by-step, please fo
   * Synopsys Educational Design Kit (SAED90nm)
   * [Nangate Open Cell Library](https://github.com/JulianKemmerer/Drexel-ECEC575/tree/master/Encounter/NangateOpenCellLibrary)
  
- ## Below is a detailed guide for the experimental process, broken down into 5 steps to provide clear instructions： 
+## Below is a detailed guide for the experimental process, broken down into 5 steps to provide clear instructions： 
+
+## Step 1: Configure standard cell library (I directly provided it; for different Netlist, detailed code generation can be seen (https://github.com/baikediguo/fusa/blob/main/generate_cell_code.py).)
+
+   Script: generate_cell.code.py
+   Input: Synthesized netlist file pe.synth_dct.v
+   Output: Verilog cell library cells.v
+   
+   Functionality:
+    * Automatically parses standard cell instances (e.g., DFFX1, NAND2X0) from the netlist
+    * Generates behavioral Verilog models for each cell type based on predefined templates
+    * Preserves original port ordering for LEC compatibility
+    * Handles special register outputs for sequential elements
+
+ ## Step 2: Testbench Initialization （tb.v）
+   Requirements:
+   * Place cells.v and tb.v in the same directory
+   * Testbench (tb.v) must instantiate the PE module with correct port mappings
+   * Ensure timescale 1ns/1ps directive exists for proper timing simulation
+     
+ ## Step 3: Predict or rank the fault likelihood of each node in the Verilog circuit netlist without explicit fault injection (unsup_sensitivity.py)
+ ## System architecture diagram
+```mermaid
+graph TD
+    A[Verilog Netlist File] --> B[Parser]
+    B --> C[Construct Directed Graph]
+    C --> D[Feature Extraction]
+    D --> E[Structural Feature Calculation]
+    C --> F[Graph Data Processing]
+    E --> G[Feature Matrix]
+    F --> H[Edge Index Matrix]
+    G --> I[DGI Model Training]
+    H --> I
+    I --> J[Node Embeddings]
+    J --> K[Feature Fusion]
+    G --> K
+    K --> L[Sensitivity Score]
+    L --> M[Ranked Output]
+```
+    1. Process Flowchart：
+```mermaid
+    graph LR
+    A[Verilog File] --> B[AST Parsing]
+    B --> C[Identify Instances & Connections]
+    C --> D[Construct Directed Graph]
+    D --> E[Mark Output Nodes]
+    D --> F[Mark Sequential Elements]
+ ```
+   2. Self-Supervised Learning (DGI)
+```mermaid
+    graph TD
+    A[Raw Features] --> B[GIN Encoder]
+    C[Corrupted Features] --> B
+    B --> D[Node Embeddings (H)]
+    B --> E[Corrupted Embeddings (H_corrupt)]
+    D --> F[Graph-Level Summary (s)]
+    F --> G[Discriminator]
+    E --> G
+    D --> G
+    G --> H[Loss Calculation]
+```
