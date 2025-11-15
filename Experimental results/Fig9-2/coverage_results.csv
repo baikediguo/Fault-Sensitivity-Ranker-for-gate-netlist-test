@@ -1,0 +1,5 @@
+SourceFile,node coverage_AUC,node coverage_AvgCoverage,node coverage_CoverageSumPerTime,fault coverage_AUC,fault coverage_AvgCoverage,fault coverage_CoverageSumPerTime
+exausitive.xlsx,32862.04,83.0401,35.854965,22663.4,57.246,24.717617
+statistical.xlsx,39600,100,10.818201,29980.26,75.7969,8.199861
+sensitive.xlsx,35096.68,88.6492,249.218322,25482.68,64.4923,181.306349
+random.csv,26880.82,67.8983,26.044611,17566,44.3597,17.015612

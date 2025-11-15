@@ -1,0 +1,6 @@
+topk,tested_nodes,fault_coverage(%),node_coverage(%),escaped_nodes,escaped_faults
+20,4,100.00,100.00,0,0
+40,8,100.00,100.00,0,0
+60,12,91.67,100.00,0,2
+80,16,87.50,100.00,0,4
+100,20,82.50,100.00,0,7
