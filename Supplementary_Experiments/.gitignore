@@ -1,0 +1,35 @@
+# Compiled object files
+*.o
+*.obj
+*.a
+*.lib
+
+# Dependency files
+*.d
+
+# Executable files
+*.exe
+*.out
+
+# Verilator build directories
+obj_dir/
+**/obj_dir/
+
+# Simulation outputs (large files)
+*.vcd
+*.fst
+
+# Temporary files
+*.tmp
+*.log
+*.bak
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# Keep important result files
+!*.csv
+!*.txt
+!*.json
