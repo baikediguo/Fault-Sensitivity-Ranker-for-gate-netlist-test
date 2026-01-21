@@ -610,7 +610,7 @@ def run_batch_worker(args) -> Dict:
     
     # Run in WSL
     # Note: wsl_exe_path must be a WSL path
-    cmd_str = f'"{wsl_exe_path}" +BATCH_START={start_idx} +BATCH_END={end_idx}'
+    cmd_str = f'"{wsl_exe_path}" +BATCH_START={start_idx} +BATCH_END={end_idx} +DUMPFILE=none.vcd'
     
     # Run via WSL
     # We shouldn't use run_cmd_fast directly as it spawns subprocess on Windows without wsl prefix
@@ -766,11 +766,11 @@ def run_circuit_injection_batched(circuit_name: str, verilog_path: str,
          print(f'  [警告] Golden 编译失败，尝试从注入版获取基准')
          gold_out = ""
          # Fallback to FI version with no fault
-         cmd_str = f'"{wsl_exe_path}" +FAULT_ID=-1 +BATCH_START=0 +BATCH_END=1'
+         cmd_str = f'"{wsl_exe_path}" +FAULT_ID=-1 +BATCH_START=0 +BATCH_END=1 +DUMPFILE=none.vcd'
          rc, gold_out = run_wsl_cmd(cmd_str, capture=True, timeout=120)
     else:
         wsl_golden_exe = f"{wsl_golden_dir}/Vtb_golden"
-        rc, gold_out = run_wsl_cmd(f'"{wsl_golden_exe}"', capture=True, timeout=120)
+        rc, gold_out = run_wsl_cmd(f'"{wsl_golden_exe}" +DUMPFILE=none.vcd', capture=True, timeout=120)
     
     golden_vals = []
     for line in gold_out.splitlines():
