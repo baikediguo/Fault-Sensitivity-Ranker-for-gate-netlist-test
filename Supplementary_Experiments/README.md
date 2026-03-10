@@ -2,6 +2,13 @@
 
 This folder contains the supplementary experimental data and code for the GNN-based fault sensitivity ranking project.
 
+### Repository Scope and Data Availability
+*This repository focuses on open-sourcing the core source code and the algorithmic framework of the proposed Fault Sensitivity Ranker. It provides the essential scripts to help the community understand and adapt our methodology.*
+
+*Please note that the raw experimental data, extensive simulation logs, and comprehensive test patterns (e.g., custom-modified vectors or full-scale ATPG patterns) required to reproduce the specific evaluations in the manuscript (such as the comprehensive trend analysis and related tables) are **not included** in this public repository. The full-scale fault injection campaigns across the gate-level netlists are highly computationally intensive and generate massive datasets that significantly exceed standard hosting limits.*
+
+*Therefore, this repository is maintained as a clean, lightweight, and pure-code environment for demonstrating the core toolset.*
+
 ## Environment
 
 | Component | Version |
